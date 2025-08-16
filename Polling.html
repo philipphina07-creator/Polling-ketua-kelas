@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Polling Ketua Kelas (Realtime)</title>
+  <style>
+    :root { --bg:#0f172a; --card:#111827; --muted:#94a3b8; --text:#e5e7eb; --accent:#22c55e; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; background:linear-gradient(180deg,#0b1020,#0f172a); color:var(--text); }
+    .wrap { max-width: 940px; margin: 24px auto; padding: 16px; }
+    .card { background: rgba(17,24,39,0.8); border:1px solid rgba(148,163,184,0.15); border-radius: 16px; padding: 20px; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+    h1 { margin:0 0 8px; font-size: clamp(22px, 3.5vw, 34px); }
+    p { color: var(--muted); margin-top: 0; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(240px,1fr)); gap: 14px; }
+    .btn { width:100%; border:1px solid rgba(255,255,255,.08); background: linear-gradient(180deg,#1f2937,#111827); color: var(--text); padding: 14px 16px; border-radius: 12px; font-size: 16px; cursor: pointer; transition: transform .05s ease, filter .2s; }
+    .btn:hover { filter: brightness(1.05); }
+    .btn:active { transform: translateY(1px) scale(.995); }
+    .btn[disabled] { opacity:.5; cursor:not-allowed; }
+    .tag { display:inline-block; padding: 2px 8px; border-radius: 999px; background: rgba(34,197,94,.12); color:#A7F3D0; font-size: 12px; border:1px solid rgba(34,197,94,.3); }
+    .flex { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+    .subtle { font-size: 12px; color: var(--muted); }
+    canvas { background: transparent; }
+    .footer { text-align:center; margin-top:20px; color: var(--muted); font-size:12px; }
+    .codeslot { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; color:#93c5fd; }
+  </style>
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <!-- Firebase (compat for simplicity in one file) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card" style="margin-bottom:14px">
+      <div class="flex">
+        <div>
+          <h1>Polling Ketua Kelas</h1>
+          <p id="poll-desc">Pilih satu kandidat, hasil akan tampil <strong>real‑time</strong>.</p>
+        </div>
+        <div class="tag" id="status-tag">Realtime: tersambung</div>
+      </div>
+      <div class="subtle">ID Polling: <span class="codeslot" id="poll-id-slot"></span></div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2 style="margin-top:0">Pilih Kandidat</h2>
+        <div id="candidates" class="grid" style="grid-template-columns:1fr; gap:10px"></div>
+        <p class="subtle" id="vote-note">Kamu hanya bisa memilih <strong>sekali</strong> di perangkat ini.</p>
+      </div>
+
+      <div class="card">
+        <h2 style="margin-top:0">Hasil Langsung</h2>
+        <div class="flex" style="margin-bottom:10px">
+          <div class="subtle">Total suara: <span id="total-votes">0</span></div>
+          <div class="subtle">Terakhir update: <span id="last-update">-</span></div>
+        </div>
+        <canvas id="chart" height="200"></canvas>
+        <div id="list" class="subtle" style="margin-top:12px"></div>
+      </div>
+    </div>
+
+    <div class="footer">
+      <div>Tip: ganti nama kandidat & <span class="codeslot">POLL_ID</span> di bagian konfigurasi script.</div>
+    </div>
+  </div>
+
+<script>
+  // ========= 1) EDIT BAGIAN INI =========
+  // Ganti dengan config Firebase project-mu (Project Settings → General → Your apps → SDK setup and configuration → CDN)
+  const firebaseConfig = {
+    apiKey: "PASTE_API_KEY",
+    authDomain: "PASTE_AUTH_DOMAIN",
+    databaseURL: "PASTE_DATABASE_URL", // penting untuk Realtime Database
+    projectId: "PASTE_PROJECT_ID",
+    storageBucket: "PASTE_STORAGE_BUCKET",
+    messagingSenderId: "PASTE_SENDER_ID",
+    appId: "PASTE_APP_ID"
+  };
+
+  // Ganti ID Polling (huruf-kecil-angka-tanpa-spasi)
+  const POLL_ID = "ketua-kelas-2025";
+
+  // Daftar kandidat (bebas edit)
+  const CANDIDATES = [
+    { id: "andi", name: "Andi" },
+    { id: "budi", name: "Budi" },
+    { id: "citra", name: "Citra" }
+  ];
+
+  // ======== 2) INISIALISASI FIREBASE ========
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.database();
+  const votesRef = db.ref(`polls/${POLL_ID}/votes`);
+
+  // ======== 3) UI SETUP ========
+  document.getElementById('poll-id-slot').textContent = POLL_ID;
+
+  const candidatesEl = document.getElementById('candidates');
+  const listEl = document.getElementById('list');
+  const totalVotesEl = document.getElementById('total-votes');
+  const lastUpdateEl = document.getElementById('last-update');
+  const statusTag = document.getElementById('status-tag');
+  const voteNote = document.getElementById('vote-note');
+
+  const votedKey = `voted:${POLL_ID}`;
+  let hasVoted = localStorage.getItem(votedKey) === '1';
+
+  function makeButtons() {
+    candidatesEl.innerHTML = '';
+    CANDIDATES.forEach(c => {
+      const btn = document.createElement('button');
+      btn.className = 'btn';
+      btn.textContent = `Pilih ${c.name}`;
+      btn.disabled = hasVoted;
+      btn.onclick = () => castVote(c.id, c.name);
+      candidatesEl.appendChild(btn);
+    });
+    voteNote.textContent = hasVoted ? 'Kamu sudah memilih di perangkat ini.' : 'Kamu hanya bisa memilih sekali di perangkat ini.';
+  }
+  makeButtons();
+
+  // ======== 4) VOTE (pakai transaction biar aman) ========
+  async function castVote(candidateId, candidateName) {
+    if (hasVoted) return;
+    try {
+      await votesRef.child(candidateId).transaction(current => (current || 0) + 1);
+      localStorage.setItem(votedKey, '1');
+      hasVoted = true;
+      makeButtons();
+      alert(`Terima kasih! Suara untuk ${candidateName} tercatat.`);
+    } catch (e) {
+      console.error(e);
+      alert('Gagal mengirim suara. Coba lagi.');
+    }
+  }
+
+  // ======== 5) LISTEN REALTIME & CHART ========
+  let chart;
+  function ensureChart(labels) {
+    const ctx = document.getElementById('chart');
+    if (chart) return chart;
+    chart = new Chart(ctx, {
+      type: 'bar',
+      data: { labels, datasets: [{ label: 'Jumlah Suara', data: labels.map(_=>0) }] },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: { beginAtZero: true, ticks: { precision:0 } }
+        },
+        plugins: { legend: { display: false } }
+      }
+    });
+    return chart;
+  }
+
+  function updateListAndTotals(snapshotVal) {
+    const counts = CANDIDATES.map(c => ({ id: c.id, name: c.name, n: snapshotVal?.[c.id] || 0 }));
+    const total = counts.reduce((a,b)=>a+b.n,0);
+    totalVotesEl.textContent = total;
+    lastUpdateEl.textContent = new Date().toLocaleTimeString();
+    listEl.innerHTML = counts.map(c => `${c.name}: <strong>${c.n}</strong>`).join(' • ');
+
+    const labels = CANDIDATES.map(c=>c.name);
+    const data = CANDIDATES.map(c=>snapshotVal?.[c.id] || 0);
+    const ch = ensureChart(labels);
+    ch.data.labels = labels;
+    ch.data.datasets[0].data = data;
+    ch.update();
+  }
+
+  // Pastikan node votes ada, kalau belum buat 0 semua agar chart tampil rapi pertama kali.
+  async function bootstrapCountsIfEmpty() {
+    const snap = await votesRef.get();
+    if (!snap.exists()) {
+      const init = {};
+      CANDIDATES.forEach(c => init[c.id] = 0);
+      await votesRef.set(init);
+    }
+  }
+
+  bootstrapCountsIfEmpty().then(()=>{
+    votesRef.on('value', (snap) => {
+      updateListAndTotals(snap.val());
+    });
+  });
+
+  // Connection state indicator
+  db.ref('.info/connected').on('value', (s)=>{
+    const ok = !!s.val();
+    statusTag.textContent = ok ? 'Realtime: tersambung' : 'Offline: menunggu koneksi…';
+    statusTag.style.background = ok ? 'rgba(34,197,94,.12)' : 'rgba(234,179,8,.12)';
+    statusTag.style.color = ok ? '#A7F3D0' : '#fde68a';
+    statusTag.style.borderColor = ok ? 'rgba(34,197,94,.3)' : 'rgba(234,179,8,.35)';
+  });
+</script>
+
+</body>
+</html>
+
+
